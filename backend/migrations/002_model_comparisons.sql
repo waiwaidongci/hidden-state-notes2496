@@ -1,0 +1,6 @@
+-- model_comparisons added after 001 via SQLAlchemy create_all on startup (demo/dev), not a production migration runner.
+-- model_comparisons(id, study_id FK sequence_studies, baseline_profile_id FK model_profiles,
+--   name UNIQUE varchar(180), profile_snapshots JSON, trace_snapshot JSON,
+--   status varchar(24) default 'queued', result JSON nullable, error TEXT nullable,
+--   created_by varchar(120), created_at DATETIME). Candidate profiles may come from different studies
+--   as long as their symbol sets match; symbol order and state count may differ.

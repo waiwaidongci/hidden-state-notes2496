@@ -2,7 +2,7 @@
 
 燕汐试验设备组的18位序列分析员把离散观测码与固定HMM假设相对照，再回看独立设备记录。上游是 `yx-fixed-hmm-1-202611.json` 等编码轨迹与已声明参数，下游是负责人批准的工况核对说明。三个具体痛点是单点最高后验被拼成“真实路径”、长序列概率相乘下溢、模型版本与观测来源混淆。
 
-本项目固定π/A/B，不训练、不做EM。log域前向后向给边际后验，log Viterbi给整段联合MAP；状态名称只是模型假设，不是故障事实或在线告警。固定seed生成3项研究、3个三态四码模型，每组80条40码轨迹，共240条；默认每次选择前20条。
+本项目固定π/A/B，不训练、不做EM。log域前向后向给边际后验，log Viterbi给整段联合MAP；状态名称只是模型假设，不是故障事实或在线告警。固定seed生成3项研究、6个模型版本（含二态、受限零概率与异码序对照版），每组80条40码轨迹，共240条；默认每次选择前20条，并预置一条四版本对比演示单。
 
 ## 启动和角色
 
@@ -20,9 +20,9 @@ docker compose exec -T backend python -m scripts.seed_demo
 
 |账号 / 密码|权限与主要页面|典型动作|
 |---|---|---|
-|admin@yanxi.demo / Yanxi2026!|六页、写入与审批|批准/退回固定模型工况核对|
-|analyst@yanxi.demo / Yanxi2026!|六页、导入/版本/轨迹/运行/说明|冻结固定参数、修订观测、排队；审批403|
-|viewer@yanxi.demo / Yanxi2026!|六页只读、批准CSV|对照后验和路径、导出；写入403|
+|admin@yanxi.demo / Yanxi2026!|七页、写入与审批|批准/退回固定模型工况核对|
+|analyst@yanxi.demo / Yanxi2026!|七页、导入/版本/轨迹/运行/对比/说明|冻结固定参数、修订观测、排队推断与模型对比；审批403|
+|viewer@yanxi.demo / Yanxi2026!|七页只读、批准CSV|对照后验、版本对比和路径、导出；写入403|
 
 `.env.example`含FE/API/DB端口、MYSQL_DATABASE/USER/PASSWORD/ROOT_PASSWORD、JWT_SECRET、SEED_DEMO、RATE_LIMIT_WRITES（默认60）。演示密码和JWT secret仅用于本地，部署须设置自己的值。首次启动自动seed；独立重复执行幂等，不覆盖用户轨迹、版本文字和说明。
 
@@ -56,15 +56,25 @@ Viterbi在相同log空间用max替代sum，保留每个状态的最佳前缀路�
 
 跨轨迹的logL和是所选记录的描述性总和；将其解释为联合likelihood还需要轨迹间独立。后验和路径都条件于固定模型，未估计参数不确定性、真实故障准确率或在线告警能力。
 
+## 模型版本对比（共用冻结观测）
+
+“模型版本对比”页（导航05）解决“只能分开看固定模型运行、难以判断同批观测支持哪个版本”的问题。一次选择2–8个候选版本与1–30条轨迹，提交时冻结全部候选版本快照与同一份轨迹快照；之后并发修订观测或重建版本都不改变已排队对比，这与单模型运行的快照口径一致。
+
+候选只要求观测码**集合**相同（frozenset比较），码的排列顺序与状态数（2–5）允许不同，且候选可来自不同研究：每个版本按自己的`symbols`顺序把字符串码映射成发射列索引，因此异序但同构的版本对同一轨迹给出一致logL（仅1–2ULP浮点差）。码集合不同或基准版本不在候选内按422拒绝。
+
+每个“版本×轨迹”格独立跑log域前向算法。某版本在某轨迹遇到零概率（初态发射全零或某步所有路径为零）时只把该格标为`explainable=false`并保留原因，**不抛出、不拖垮整个对比**，其他版本与其他轨迹照常完成；这与单模型运行遇零概率整单failed形成对照。该版本的累计logL只对其可解释轨迹用`math.fsum`求和，全部轨迹不可解释时累计为null、不进入名次。线性概率下溢（`exp(logL)`归零）只标记`linear_likelihood_underflows`，logL仍有限且照常参与排序，不误判为不可解释。
+
+版本按可解释轨迹的累计logL降序排名，并列按版本ID升序稳定排序。逐轨迹表对每个可解释格列出序列logL与相对基准版本的差值（当前−基准）；基准自身差值恒为0；任一侧不可解释时差值为null。版本汇总另给相对基准的累计差值。结果含sha256冻结指纹（候选+轨迹+基准ID）、审计动作`comparison.queued`/`comparison.completed`/`comparison.failed`，worker产物写`compare-{id}.json`。
+
 ## 实体、工程与校验
 
-78个有职责的Python/TS/Vue/CSS文件（不含空包、依赖和dist）。五实体SequenceStudy → ModelProfile → ObservationTrace → InferenceRun → InterpretationNote贯穿ORM/schema/service/routes、前端API/store和六页：隐态总览、观测与版本、固定模型推断、后验与联合路径、工况核对、过程留痕。
+六实体SequenceStudy → ModelProfile → ObservationTrace → InferenceRun/ModelComparison → InterpretationNote贯穿ORM/schema/service/routes、前端API/store和七页：隐态总览、观测与版本、固定模型推断、后验与联合路径、模型版本对比、工况核对、过程留痕。
 
 前端 `src/{api,stores,types,components/common,hooks,pages,router,utils,constants}`；后端 `src/{routes,controllers,services,models,schemas,middlewares,utils,constants,config}`，另scripts/seed_demo.py与migrations/。StateBands、InferenceSummary、ProfileMatrix、RunList多页复用，PosteriorGrid只展示后端后验；useTask/useRoute与format处理交互。Vue的id=app/mount('#app')匹配。
 
 Role/RunStatus/NoteStatus位于 `backend/src/constants/enums.py`，前端对应 `frontend/src/constants/enums.ts`。JWT、审计、RequestID/Error/Redis写限流三个中间件形成横切链路。按令牌摘要或无令牌IP分钟计数，默认60写请求，429含Retry-After；计数不可用503，健康GET不计。审批行锁使draft只审一次，导出取result_snapshot。
 
-每研究1–240轨迹，每条1–200码，单任务1–30条、状态≤5；重复ID、外研究轨迹/版本、未知码、非法矩阵维度、NaN/Inf/bool概率或ID、安全行和以422拒绝。任务提交时同时冻结profile与所选trace，之后修订源记录不影响worker输入或批准快照。
+每研究1–240轨迹，每条1–200码，单任务1–30条、状态≤5；重复ID、外研究轨迹/版本、未知码、非法矩阵维度、NaN/Inf/bool概率或ID、安全行和以422拒绝。模型对比单限2–8个候选版本、1–30条轨迹，候选可跨研究但观测码集合必须相同，基准版本须在候选内。任务提交时同时冻结模型版本与所选trace，之后修订源记录不影响worker输入或批准快照。
 
 MySQL累计logL及最大归一delta列用DOUBLE(asdecimal=False)，保持Python float。当前MySQL JSON读回与DOUBLE列在累计logL约−969时可差1ULP（约1.14e−13），验收按2ULP检查，完整结果保留实际读回数值。
 
